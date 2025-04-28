@@ -1,0 +1,8 @@
+ollama==0.4.4
+streamlit==1.40.0
+pdfplumber==0.11.4
+chromadb>=0.4.22
+llama-index==0.12.33
+llama-index-llms-ollama==0.5.4
+llama-index-embeddings-huggingface==0.5.3
+llama-index-vector-stores-chroma==0.4.1
