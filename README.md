@@ -24,7 +24,7 @@ Once the models are installed, run the following command in terminal:
 
 ### On Linux/Mac:
 ```
-python3.11 -m venv myvenv
+python3 -m venv myvenv
 source myvenv/bin/activate
 ```
 
@@ -37,6 +37,7 @@ myvenv\Scripts\activate
 
 ### Step 5: Install dependencies
 
+`pip install --upgrade pip`
 `pip install -r requirements.txt`
 
 ### Step 6: Run the code
