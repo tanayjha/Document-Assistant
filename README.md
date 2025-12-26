@@ -47,13 +47,70 @@ From the main folder run the following command:
 
 This should open up the app in: http://localhost:8501/
 
+## Hardware requirements
+
+1. Operating System
+   - Red Hat Enterprise Linux (RHEL) 8.x or 9.x
+   - 64-bit (x86_64) architecture
+   - User account with permission to:
+     - Install user-level software
+     - Create Python virtual environments
+     - Run local services on localhost
+
+2. Hardware Requirements
+
+   Minimum Configuration
+   - CPU: 4 cores (Intel i5 / AMD Ryzen 5 or equivalent)
+   - RAM: 16 GB
+   - Storage: 50–100 GB free disk space (SSD preferred)
+
+   Recommended Configuration
+   - CPU: 8 cores
+   - RAM: 32 GB
+   - Storage: 100+ GB SSD
+   - (GPU not mandatory; optional NVIDIA GPU can improve performance)
+
+3. Required Software (Pre-Installed or Approved)
+   - Python 3.10 or newer
+     - Includes pip and venv
+   - Git
+   - Ollama (Linux version)
+     - Approved for running local LLM models
+   - Standard RHEL development tools:
+     - gcc / make
+     - openssl
+     - libffi
+     - other common build dependencies for Python packages
+
+4. Network & Security
+   - Access to localhost (127.0.0.1)
+   - Web browser installed (Firefox / Chrome)
+   - Outbound internet access for:
+     - Python dependency installation
+     - Initial Ollama model download
+     - (Alternatively, allow offline/mirrored package installation)
+   - No cloud connectivity required at runtime
+   - All processing and data remain local to the machine
+
+5. Application Runtime
+   - Python virtual environment creation allowed
+   - Streamlit applications permitted to run locally
+   - Local web UI accessible at:
+     - http://localhost:8501
+   - No root privileges required to run the application
+
+6. Compliance & Suitability
+   - Fully local execution (no external data sharing)
+   - Compatible with secure / restricted government environments
+   - Suitable for air-gapped or controlled network deployments
+
 Here is a writeup for this project
 
 ## Abstract
 
 This project explores the development of a fully local Retrieval-Augmented Generation (RAG) pipeline using large language models (LLMs) to enable private, document-based question answering. The motivation behind this work stems from growing concerns around data privacy, cloud dependency, and the need for user control in document parsing workflows. Existing cloud-based AI solutions typically require users to upload potentially sensitive documents to external servers and often impose restrictions on file size or usage, especially in free tiers. Moreover, fine-grained control over how documents are parsed and indexed can be critical for achieving more accurate results—something often difficult to customize in off-the-shelf cloud platforms.
 
-To address these concerns, we implemented a local solution using the Ollama framework to run LLMs natively. The RAG architecture was built using ollama-index for orchestrating document ingestion and retrieval, ChromaDB as the vector store, and local embedding models for vectorization.
+To address these concerns, we implemented a local solution using the Ollama framework to run LLMs natively. The RAG architecture was built using LlamaIndex for orchestrating document ingestion and retrieval, ChromaDB as the vector store, and local embedding models for vectorization.
 
 The system supports the following core functionalities:
 
@@ -123,14 +180,16 @@ These embeddings are then stored in a local vector database using ChromaDB, mana
 All vector-related operations are orchestrated using the StorageContext from LlamaIndex, ensuring a clean separation between embedding logic and storage backend.
 
 ### Index and Query Engine Construction
-Once the documents are embedded and stored, an index is created using VectorStoreIndex.from_documents. This index is coupled with an Ollama-powered LLM (llama3.2) to enable the query engine.
+Once the documents are embedded and stored, an index is created using VectorStoreIndex.from_documents. This index is coupled with an Ollama-powered LLM (llama3.2) to enable the chat engine.
 
-The query engine is configured to:
-* Use top-3 most similar chunks based on vector similarity.
-* Perform non-streaming inference locally.
+The chat engine is configured to:
+* Use top-5 most similar chunks based on vector similarity.
+* Utilize a chat memory buffer with token limit of 2000.
+* Include a system prompt to guide the assistant's behavior.
+* Operate in "context" chat mode.
 * Handle LLM timeouts robustly (request_timeout=120.0).
 
-The query engine is stored in session state and used for subsequent prompt-based interactions.
+The chat engine is stored in session state and used for subsequent prompt-based interactions.
 
 ### User Interaction and Response Generation
 The chatbot interface is embedded into the second column of the UI. It keeps a history of interactions using Streamlit’s session state and allows the user to input natural language questions. Once a prompt is submitted:
@@ -171,18 +230,19 @@ The UI is built using Streamlit and configured with a minimal, wide layout:
 
 ```
 st.set_page_config(
-    page_title="Document Processing Agent",
-    page_icon="🎈",
+    page_title="📚 Document Assistant",
+    page_icon="🧠",
     layout="wide",
-    initial_sidebar_state="collapsed",
+    initial_sidebar_state="expanded",
 )
 ```
 
-The interface is split into two main columns:
-* Left Column (col1): Displays PDF previews and file upload controls.
-* Right Column (col2): Houses the chatbot interface for querying indexed documents.
+The interface is organized with a sidebar for file management and two tabs:
+* Sidebar: Contains file upload controls and a document selector for preview.
+* Chat Tab: Houses the chatbot interface for querying indexed documents.
+* Document Viewer Tab: Displays PDF previews with zoom controls.
 
-All persistent application states (e.g., uploaded files, query engine, message history) are maintained using st.session_state to preserve interactivity across multiple user actions.
+All persistent application states (e.g., uploaded files, query engine, message history, memory buffer) are maintained using st.session_state to preserve interactivity across multiple user actions.
 
 ### PDF Upload and Rendering
 PDF files are uploaded using st.file_uploader, with support for multiple files. Each file is saved locally to the ./docs directory and processed if it hasn't already been indexed. A helper function uses pdfplumber to extract and cache each page as an image:
@@ -215,36 +275,51 @@ index = VectorStoreIndex.from_documents(
 ```
 
 ### Query Engine and Local LLM
-Once the index is built, a query engine is instantiated using a locally running LLM via the Ollama interface:
+Once the index is built, a chat engine is instantiated using a locally running LLM via the Ollama interface:
 
 ```
 llm = Ollama(model="llama3.2", request_timeout=120.0)
-query_engine = index.as_query_engine(
+st.session_state["query_engine"] = index.as_chat_engine(
     llm=llm,
-    similarity_top_k=3,
-    streaming=False,
+    memory=st.session_state["memory_buffer"],
+    system_prompt="You are a helpful assistant that answers questions based on uploaded documents.",
+    chat_mode="context",
+    similarity_top_k=5
 )
 ```
 
-This engine performs similarity-based retrieval of document chunks and generates responses using the LLM. A user-defined function process_question() handles interaction with the engine and returns the generated text.
+This engine performs similarity-based retrieval of document chunks, maintains conversation history through a memory buffer, and generates responses using the LLM. The chat engine's `.chat()` method handles interaction and returns response objects containing the generated text and source nodes.
 
 ### Chat Interaction and State Management
-The chatbot interface maintains conversational context using st.session_state["messages"]. Each user prompt and assistant response is rendered with role-based avatars and added to the persistent session:
+The chatbot interface maintains conversational context using st.session_state["messages"] and a ChatMemoryBuffer. Each user prompt and assistant response is rendered with role-based avatars and added to the persistent session:
 
 ```
-if prompt := st.chat_input("Enter a prompt here...", key="chat_input"):
+user_input = st.chat_input("Ask something about your documents...", key="chat_input")
+
+if user_input:
+    st.session_state["pending_prompt"] = user_input
+
+if "pending_prompt" in st.session_state:
+    prompt = st.session_state["pending_prompt"]
     st.session_state["messages"].append({"role": "user", "content": prompt})
-    ...
-    response = process_question(st.session_state["query_engine"], prompt)
-    st.session_state["messages"].append({"role": "assistant", "content": response})
+    
+    response = st.session_state["query_engine"].chat(prompt)
+    st.session_state["messages"].append({"role": "assistant", "content": response.response})
+    
+    del st.session_state["pending_prompt"]
 ```
 
-The interface checks if any documents are uploaded before answering queries and warns the user if not.
+The interface displays response time metrics and shows source document excerpts in an expandable section. A download button allows users to export the entire chat history.
 
 ### Optimizations and Usability Features
-Zoom Control: A slider allows dynamic resizing of rendered PDF page images.
-Session Optimization: Uploaded files are tracked with a files_processed set to avoid reindexing.
-Error Handling: Indexing exceptions are caught and reported via st.error.
+* Zoom Control: A slider allows dynamic resizing of rendered PDF page images (100-1000px).
+* Session Optimization: Uploaded files are tracked with a files_processed set to avoid reindexing.
+* Error Handling: Indexing exceptions are caught and reported via st.error.
+* Response Metrics: Each response displays the processing time in seconds.
+* Source Attribution: An expandable section shows document excerpts that contributed to each answer.
+* Chat Export: Users can download the complete conversation history as a text file.
+* Tab-Based Interface: Separate tabs for chat and document viewing improve organization.
+* Multi-Column PDF Display: PDF pages are displayed in a 3-column grid for efficient viewing.
 
 
 ## Results and Evaluations
