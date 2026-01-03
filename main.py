@@ -121,7 +121,7 @@ def main():
         selected_doc = None
         if st.session_state["file_uploads"]:
             file_names = [f.name for f in st.session_state["file_uploads"]]
-            selected_doc = st.radio("Choose a document to preview", file_names, label_visibility="collapsed")
+            selected_doc = st.selectbox("Choose a document to preview", file_names)
         else:
             st.info("Upload PDFs below to get started.")
 
