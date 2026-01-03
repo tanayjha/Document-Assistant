@@ -1,2 +1,14 @@
 myvenv/
+venv/
 docs/
+model_cache/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/

@@ -59,46 +59,61 @@ st.set_page_config(
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 
+# Constants
+TEMP_DIR = "./docs"
+MODEL_CACHE_DIR = "./model_cache"
+EMBEDDING_MODEL = "BAAI/bge-base-en-v1.5"
+OLLAMA_MODEL = "llama3.2"
+SYSTEM_PROMPT = "You are a helpful assistant that answers questions based on uploaded documents."
+SIMILARITY_TOP_K = 5
+MEMORY_TOKEN_LIMIT = 2000
+
 @st.cache_data
-def extract_all_pages_as_images(file_upload) -> List[Any]:
-    with pdfplumber.open(file_upload) as pdf:
+def extract_all_pages_as_images(file_path: str) -> List[Any]:
+    """Extract all pages from a PDF file as images."""
+    with pdfplumber.open(file_path) as pdf:
         return [page.to_image().original for page in pdf.pages]
 
-# Main App
-def main():
-    st.markdown("## 🤖 Document Chat Assistant")
-
-    # Session state
-    for key, default in {
+def initialize_session_state():
+    """Initialize all session state variables."""
+    defaults = {
         "messages": [],
         "pdf_pages": {},
         "file_uploads": [],
         "index": None,
         "query_engine": None,
         "files_processed": set(),
-        "memory_buffer": ChatMemoryBuffer.from_defaults(token_limit=2000),
-    }.items():
+        "memory_buffer": ChatMemoryBuffer.from_defaults(token_limit=MEMORY_TOKEN_LIMIT),
+        "chroma_client": None,
+        "chroma_collection": None,
+        "vector_store": None,
+        "storage_context": None,
+        "embed_model": None,
+        "llm": None,
+    }
+    for key, default in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = default
 
-    # Initialize all heavy objects as None - will load when files are uploaded
-    if "chroma_client" not in st.session_state:
-        st.session_state["chroma_client"] = None
+def create_query_engine():
+    """Create a new query engine with current settings."""
+    if st.session_state["index"] is None or st.session_state["llm"] is None:
+        return None
 
-    if "chroma_collection" not in st.session_state:
-        st.session_state["chroma_collection"] = None
+    return st.session_state["index"].as_chat_engine(
+        llm=st.session_state["llm"],
+        memory=st.session_state["memory_buffer"],
+        system_prompt=SYSTEM_PROMPT,
+        chat_mode="context",
+        similarity_top_k=SIMILARITY_TOP_K
+    )
 
-    if "vector_store" not in st.session_state:
-        st.session_state["vector_store"] = None
+# Main App
+def main():
+    st.markdown("## 🤖 Document Chat Assistant")
 
-    if "storage_context" not in st.session_state:
-        st.session_state["storage_context"] = None
-
-    if "embed_model" not in st.session_state:
-        st.session_state["embed_model"] = None
-
-    if "llm" not in st.session_state:
-        st.session_state["llm"] = None
+    # Initialize session state
+    initialize_session_state()
 
     # Sidebar
     with st.sidebar:
@@ -119,19 +134,19 @@ def main():
 
     # Process uploaded PDFs
     if uploaded_files:
-        custom_temp_dir = "./docs"
-        os.makedirs(custom_temp_dir, exist_ok=True)
+        os.makedirs(TEMP_DIR, exist_ok=True)
+        os.makedirs(MODEL_CACHE_DIR, exist_ok=True)
         new_files = False
 
         for file_upload in uploaded_files:
             if file_upload.name not in st.session_state["files_processed"]:
                 new_files = True
                 with st.spinner(f"📥 Processing {file_upload.name}..."):
-                    file_path = os.path.join(custom_temp_dir, file_upload.name)
+                    file_path = os.path.join(TEMP_DIR, file_upload.name)
                     with open(file_path, "wb") as f:
                         f.write(file_upload.read())
                     st.session_state["file_uploads"].append(file_upload)
-                    st.session_state["pdf_pages"][file_upload.name] = extract_all_pages_as_images(file_upload)
+                    st.session_state["pdf_pages"][file_upload.name] = extract_all_pages_as_images(file_path)
                     st.session_state["files_processed"].add(file_upload.name)
 
         if new_files:
@@ -147,16 +162,17 @@ def main():
                 if st.session_state["embed_model"] is None:
                     with st.spinner("🔄 Loading embedding model (this may take a minute)..."):
                         st.session_state["embed_model"] = HuggingFaceEmbedding(
-                            model_name="BAAI/bge-base-en-v1.5",
+                            model_name=EMBEDDING_MODEL,
                             device="cpu",
-                            cache_folder="./model_cache"
+                            cache_folder=MODEL_CACHE_DIR
                         )
 
                 if st.session_state["llm"] is None:
-                    st.session_state["llm"] = Ollama(model="llama3.2", request_timeout=120.0)
+                    with st.spinner("🔄 Initializing LLM..."):
+                        st.session_state["llm"] = Ollama(model=OLLAMA_MODEL, request_timeout=120.0)
 
                 with st.spinner("🔍 Building document index..."):
-                    documents = SimpleDirectoryReader(custom_temp_dir, recursive=True).load_data()
+                    documents = SimpleDirectoryReader(TEMP_DIR, recursive=True).load_data()
                     index = VectorStoreIndex.from_documents(
                         documents,
                         storage_context=st.session_state["storage_context"],
@@ -164,16 +180,11 @@ def main():
                         show_progress=True,
                     )
                     st.session_state["index"] = index
-                    st.session_state["query_engine"] = index.as_chat_engine(
-                        llm=st.session_state["llm"],
-                        memory=st.session_state["memory_buffer"],
-                        system_prompt="You are a helpful assistant that answers questions based on uploaded documents.",
-                        chat_mode="context",
-                        similarity_top_k=5
-                    )
+                    st.session_state["query_engine"] = create_query_engine()
                     st.success("✅ Index built successfully!")
             except Exception as e:
                 st.error(f"❌ Error building index: {e}")
+                logging.error(f"Index building error: {e}", exc_info=True)
 
     # Tabs for Chat + PDF Viewer
     chat_tab, pdf_tab = st.tabs(["💬 Chat", "📄 Document Viewer"])
@@ -202,31 +213,40 @@ def main():
         user_input = st.chat_input("Ask something about your documents...", key="chat_input")
 
         if user_input:
-            st.session_state["messages"].append({"role": "user", "content": user_input})
+            # Check if query engine is available
+            if st.session_state["query_engine"] is None:
+                st.warning("⚠️ Please upload documents first before asking questions.")
+            else:
+                st.session_state["messages"].append({"role": "user", "content": user_input})
 
-            with st.chat_message("assistant", avatar="🤖"):
-                with st.spinner("🤖 Thinking..."):
-                    try:
-                        start = time.time()
-                        response = st.session_state["query_engine"].chat(user_input)
-                        end = time.time()
+                with st.chat_message("assistant", avatar="🤖"):
+                    with st.spinner("🤖 Thinking..."):
+                        try:
+                            start = time.time()
+                            response = st.session_state["query_engine"].chat(user_input)
+                            end = time.time()
 
-                        st.markdown(response.response)
-                        st.caption(f"🕒 Response time: {end - start:.2f} seconds")
+                            st.markdown(response.response)
+                            st.caption(f"🕒 Response time: {end - start:.2f} seconds")
 
-                        with st.expander("📚 Sources"):
-                            for node in response.source_nodes:
-                                file = node.metadata.get("file_name", "Unknown")
-                                text = node.node.text.strip().replace("\n", " ")[:300]
-                                st.markdown(f"**{file}** — `{text}...`")
+                            with st.expander("📚 Sources"):
+                                for node in response.source_nodes:
+                                    file = node.metadata.get("file_name", "Unknown")
+                                    text = node.node.text.strip().replace("\n", " ")[:300]
+                                    st.markdown(f"**{file}** — `{text}...`")
 
-                        st.session_state["messages"].append(
-                            {"role": "assistant", "content": response.response}
-                        )
-                    except Exception as e:
-                        st.error(f"❌ Error: {e}")
+                            st.session_state["messages"].append(
+                                {"role": "assistant", "content": response.response}
+                            )
+                        except Exception as e:
+                            error_msg = f"❌ Error: {str(e)}"
+                            st.error(error_msg)
+                            st.session_state["messages"].append(
+                                {"role": "assistant", "content": error_msg}
+                            )
+                            logging.error(f"Query error: {e}", exc_info=True)
 
-            st.rerun()
+                st.rerun()
 
         # Chat controls
         if st.session_state["messages"]:
@@ -237,15 +257,8 @@ def main():
             with col2:
                 if st.button("🗑️ Clear Chat History"):
                     st.session_state["messages"] = []
-                    st.session_state["memory_buffer"] = ChatMemoryBuffer.from_defaults(token_limit=2000)
-                    if st.session_state["query_engine"]:
-                        st.session_state["query_engine"] = st.session_state["index"].as_chat_engine(
-                            llm=st.session_state["llm"],
-                            memory=st.session_state["memory_buffer"],
-                            system_prompt="You are a helpful assistant that answers questions based on uploaded documents.",
-                            chat_mode="context",
-                            similarity_top_k=5
-                        )
+                    st.session_state["memory_buffer"] = ChatMemoryBuffer.from_defaults(token_limit=MEMORY_TOKEN_LIMIT)
+                    st.session_state["query_engine"] = create_query_engine()
                     st.rerun()
 
 if __name__ == "__main__":
