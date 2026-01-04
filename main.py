@@ -64,7 +64,17 @@ TEMP_DIR = "./docs"
 MODEL_CACHE_DIR = "./model_cache"
 EMBEDDING_MODEL = "BAAI/bge-base-en-v1.5"
 OLLAMA_MODEL = "llama3.2"
-SYSTEM_PROMPT = "You are a helpful assistant that answers questions based on uploaded documents."
+SYSTEM_PROMPT = """You are a precise technical assistant that answers questions based ONLY on the provided documents.
+
+CRITICAL RULES:
+1. Answer ONLY using information explicitly stated in the documents
+2. If the answer is not in the documents, explicitly state: "This information is not available in the provided documents"
+3. Be specific and cite which document sections support your answer
+4. For specification documents, prioritize accuracy over being helpful - it's better to say you don't know than to guess
+5. If the question requires information from multiple documents, clearly indicate which document covers which part
+6. Do not make assumptions or infer beyond what is explicitly stated in the documents
+
+Always be honest about the limitations of the available information."""
 SIMILARITY_TOP_K = 5
 MEMORY_TOKEN_LIMIT = 2000
 
@@ -110,26 +120,46 @@ def create_query_engine():
 
 # Main App
 def main():
-    st.markdown("## 🤖 Document Chat Assistant")
+    # Beautiful header with gradient
+    st.markdown("""
+    <div style="text-align: center; margin-bottom: 2rem; padding: 2rem 0;">
+        <h1 style="margin: 0; font-size: 3rem;">🤖 Document Chat Assistant</h1>
+        <p style="color: #cbd5e1; font-size: 1.1rem; margin-top: 0.5rem;">Ask questions about your documents with AI-powered insights</p>
+    </div>
+    """, unsafe_allow_html=True)
 
     # Initialize session state
     initialize_session_state()
 
     # Sidebar
     with st.sidebar:
-        st.markdown("### 📂 Uploaded Files")
+        st.markdown("""
+        <div style="margin-bottom: 2rem;">
+            <h3 style="color: #3b82f6; margin-top: 0;">📂 Uploaded Documents</h3>
+        </div>
+        """, unsafe_allow_html=True)
+
         selected_doc = None
         if st.session_state["file_uploads"]:
             file_names = [f.name for f in st.session_state["file_uploads"]]
-            selected_doc = st.selectbox("Choose a document to preview", file_names)
+            st.markdown(f"<p style='color: #cbd5e1; font-size: 0.9rem;'>{len(file_names)} document(s) loaded</p>", unsafe_allow_html=True)
+            selected_doc = st.selectbox("Choose a document to preview", file_names, key="doc_select")
         else:
-            st.info("Upload PDFs below to get started.")
+            st.markdown("""
+            <div style="padding: 1rem; background-color: rgba(59, 130, 246, 0.1); border-left: 3px solid #3b82f6; border-radius: 6px;">
+                <p style="color: #cbd5e1; margin: 0; font-size: 0.95rem;">📄 No documents uploaded yet.<br>Start by uploading PDF files below.</p>
+            </div>
+            """, unsafe_allow_html=True)
 
-        # Upload area
+        st.divider()
+
+        # Upload area with better styling
+        st.markdown("<h4 style='color: #a78bfa; margin-top: 1.5rem; margin-bottom: 0.5rem;'>📥 Upload PDF Files</h4>", unsafe_allow_html=True)
         uploaded_files = st.file_uploader(
-            "📄 Upload PDF Files",
+            "Drag and drop PDFs here or click to browse",
             type="pdf",
-            accept_multiple_files=True
+            accept_multiple_files=True,
+            key="pdf_uploader"
         )
 
     # Process uploaded PDFs
@@ -192,17 +222,30 @@ def main():
     # PDF Viewer Tab
     with pdf_tab:
         if selected_doc and selected_doc in st.session_state["pdf_pages"]:
-            st.markdown(f"### 📑 Preview: {selected_doc}")
-            zoom = st.slider("🔍 Zoom", 100, 1000, 600, 50)
+            st.markdown(f"<h3 style='color: #3b82f6;'>📑 Document Preview: <span style='color: #a78bfa;'>{selected_doc}</span></h3>", unsafe_allow_html=True)
+
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                st.markdown("<small style='color: #cbd5e1;'>Total pages: <strong style='color: #3b82f6;'>{}</strong></small>".format(len(st.session_state["pdf_pages"][selected_doc])), unsafe_allow_html=True)
+            with col2:
+                zoom = st.slider("🔍 Zoom", 100, 1000, 600, 50, label_visibility="collapsed")
+
             cols = st.columns(3)
             for i, page in enumerate(st.session_state["pdf_pages"][selected_doc]):
                 with cols[i % 3]:
-                    st.image(page, caption=f"Page {i+1}", width=zoom)
+                    st.markdown(f"<p style='text-align: center; color: #cbd5e1; font-size: 0.9rem; margin-bottom: 0.5rem;'><strong>Page {i+1}</strong></p>", unsafe_allow_html=True)
+                    st.image(page, width=zoom, use_container_width=False)
         else:
-            st.info("Select a document from the sidebar to preview.")
+            st.markdown("""
+            <div style="padding: 2rem; text-align: center; background-color: rgba(59, 130, 246, 0.05); border: 1px dashed #3b82f6; border-radius: 8px;">
+                <p style="color: #cbd5e1; font-size: 1.1rem; margin: 0;">📄 Select a document from the sidebar to preview</p>
+            </div>
+            """, unsafe_allow_html=True)
 
     # Chat Tab
     with chat_tab:
+        st.markdown("<h3 style='color: #3b82f6; margin-bottom: 1.5rem;'>💬 Conversation</h3>", unsafe_allow_html=True)
+
         # Display messages
         for message in st.session_state["messages"]:
             avatar = "😎" if message["role"] == "user" else "🤖"
@@ -226,14 +269,47 @@ def main():
                             response = st.session_state["query_engine"].chat(user_input)
                             end = time.time()
 
-                            st.markdown(response.response)
-                            st.caption(f"🕒 Response time: {end - start:.2f} seconds")
+                            # Display response with enhanced styling
+                            st.markdown(f"""
+                            <div style="line-height: 1.8; color: #f1f5f9;">
+                            {response.response}
+                            </div>
+                            """, unsafe_allow_html=True)
 
-                            with st.expander("📚 Sources"):
-                                for node in response.source_nodes:
-                                    file = node.metadata.get("file_name", "Unknown")
-                                    text = node.node.text.strip().replace("\n", " ")[:300]
-                                    st.markdown(f"**{file}** — `{text}...`")
+                            # Metrics with better styling
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.markdown(f"<small style='color: #94a3b8;'>⏱️ Response time: <span style='color: #3b82f6;'>{end - start:.2f}s</span></small>", unsafe_allow_html=True)
+
+                            source_count = len(response.source_nodes)
+                            with col2:
+                                st.markdown(f"<small style='color: #94a3b8;'>📚 From <span style='color: #3b82f6;'>{source_count}</span> section(s)</small>", unsafe_allow_html=True)
+
+                            st.divider()
+
+                            # Enhanced sources display
+                            with st.expander("📚 View Sources & References", expanded=False):
+                                if response.source_nodes:
+                                    for idx, node in enumerate(response.source_nodes, 1):
+                                        file = node.metadata.get("file_name", "Unknown")
+                                        page = node.metadata.get("page_label", node.metadata.get("page_number", "N/A"))
+                                        text = node.node.text.strip().replace("\n", " ")[:300]
+
+                                        st.markdown(f"""
+                                        <div style="padding: 1rem; background-color: rgba(59, 130, 246, 0.08); border-left: 3px solid #3b82f6; border-radius: 6px; margin-bottom: 0.8rem;">
+                                            <p style="margin: 0 0 0.5rem 0; color: #3b82f6; font-weight: 600;">
+                                                📄 Source {idx}: {file}
+                                            </p>
+                                            <p style="margin: 0 0 0.5rem 0; color: #cbd5e1; font-size: 0.9rem;">
+                                                📖 Page: <strong>{page}</strong>
+                                            </p>
+                                            <p style="margin: 0; color: #cbd5e1; font-size: 0.9rem; font-style: italic;">
+                                                "{text}..."
+                                            </p>
+                                        </div>
+                                        """, unsafe_allow_html=True)
+                                else:
+                                    st.info("No sources available for this response.")
 
                             st.session_state["messages"].append(
                                 {"role": "assistant", "content": response.response}
@@ -250,12 +326,15 @@ def main():
 
         # Chat controls
         if st.session_state["messages"]:
+            st.divider()
+            st.markdown("<h4 style='color: #a78bfa; margin-bottom: 1rem;'>🛠️ Chat Actions</h4>", unsafe_allow_html=True)
+
             col1, col2 = st.columns(2)
             with col1:
                 chat_text = "\n\n".join([f"{msg['role'].capitalize()}: {msg['content']}" for msg in st.session_state["messages"]])
-                st.download_button("📥 Download Chat History", chat_text, file_name="chat_history.txt")
+                st.download_button("📥 Download Chat History", chat_text, file_name="chat_history.txt", key="download_chat")
             with col2:
-                if st.button("🗑️ Clear Chat History"):
+                if st.button("🗑️ Clear Chat History", key="clear_chat"):
                     st.session_state["messages"] = []
                     st.session_state["memory_buffer"] = ChatMemoryBuffer.from_defaults(token_limit=MEMORY_TOKEN_LIMIT)
                     st.session_state["query_engine"] = create_query_engine()
